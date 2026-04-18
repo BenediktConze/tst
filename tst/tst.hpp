@@ -312,6 +312,14 @@ struct TestRegistrar {
     }
 };
 
+// Test fixtures
+class FixtureBase {
+   public:
+    virtual void SetUp() {}
+    virtual void TearDown() {}
+    virtual ~FixtureBase() = default;
+};
+
 [[noreturn]] inline void fatalFailure() {
     ++GlobalTestManager::getInstance().activeTestFailures;
     throw PredicateFailureException();
@@ -645,3 +653,19 @@ inline void testNear(const char* expr1, const char* expr2, const char* abs_error
 
 #define ASSERT_NEAR(val1, val2, abs_error) \
     tst::testNear(val1, val2, abs_error, tst::fatalFailure, __FILE__, __LINE__)
+
+// The user-defined test function will be a member function of a type which inherits from the
+// fixture type
+#define TEST_F(TestFixture, Test)                                                           \
+    class TestFixture##_##Test : TestFixture {                                              \
+       public:                                                                              \
+        TestFixture##_##Test() { SetUp(); }                                                 \
+        ~TestFixture##_##Test() { TearDown(); }                                             \
+        void tstFixtureFun();                                                               \
+    };                                                                                      \
+    const tst::TestRegistrar TestFixture##_##Test##_##Registrar(#TestFixture, #Test, []() { \
+        TestFixture##_##Test t;                                                             \
+        tst::printRunTest(#TestFixture "." #Test,                                           \
+                          std::bind(&TestFixture##_##Test::tstFixtureFun, &t));             \
+    });                                                                                     \
+    void TestFixture##_##Test::tstFixtureFun()

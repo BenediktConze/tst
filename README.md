@@ -10,6 +10,7 @@ LLVM TypeSanitizer (which is the reason I implemented this).
 #include <cmath>
 #include <stdexcept>
 #include <vector>
+
 #include "tst/tst.hpp"
 
 // Simple unit test
@@ -37,6 +38,23 @@ TEST(SuiteName, TestName) {
     ADD_FAILURE();
 }
 
+// Test fixtures
+class MyFixture : tst::FixtureBase {
+   public:
+    void SetUp() override {
+        /* Some common setup code */
+        i = 3;
+    }
+    void TearDown() override { /* ... */ }
+
+   protected:
+    // Class members possible
+    int i = 0;
+};
+TEST_F(MyFixture, FixtureTest1) {
+    EXPECT_EQ(i, 3);
+}
+
 // Parametrized unit test
 TEST_P(SuiteName, ParamTest, int i) {
     EXPECT_GE(i, 0);
@@ -55,7 +73,7 @@ int main() {
 
 ## Roadmap (Maybe)
 - More expressive parametrized tests
-- Fixtures and typed tests
+- Typed tests
 
 ## Intentional Omissions
 - Death tests
