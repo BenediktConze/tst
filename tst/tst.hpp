@@ -358,7 +358,7 @@ inline void predicateTestFailure(const T1& actualPredicateValue, const T2& expec
 
 // Instantiate a parametrized test function with a value for the parameter
 #define INSTANTIATE_TEST_SUITE_P(TestSuite, Test, ParameterValue)                      \
-    const TestRegistrar TestSuite##_##Test##_##Registrar_##ParameterValue(             \
+    const tst::TestRegistrar TestSuite##_##Test##_##Registrar_##ParameterValue(        \
         #TestSuite, #Test "/" #ParameterValue, []() {                                  \
             tst::printRunTest(#TestSuite "." #Test "/" #ParameterValue,                \
                               std::bind(TestSuite##_##Test##TestFun, ParameterValue)); \
@@ -402,8 +402,8 @@ inline void predicateTestFailure(const T1& actualPredicateValue, const T2& expec
     } while (false)
 
 // Explicit failures
-#define ADD_FAILURE() TEST_FAIL(nonFatalFailure)
-#define FAIL() TEST_FAIL(fatalFailure)
+#define ADD_FAILURE() TEST_FAIL(tst::nonFatalFailure)
+#define FAIL() TEST_FAIL(tst::fatalFailure)
 
 // Verify condition
 #define EXPECT_TRUE(condition) TEST_BOOLEAN(condition, true, tst::nonFatalFailure)
@@ -433,7 +433,7 @@ inline void predicateTestFailure(const T1& actualPredicateValue, const T2& expec
             std::cout << std::format("{}({}): error: {}\n", __FILE__, __LINE__,                  \
                                      "Statement \"" #statement "\" did not throw an exception"); \
             FailureHandler();                                                                    \
-        } catch (const ExceptionType&) {                                                         \
+        } catch (ExceptionType) {                                                                \
         } catch (...) {                                                                          \
             std::cout << std::format("{}({}): error: {}\n", __FILE__, __LINE__,                  \
                                      "Statement \"" #statement                                   \
