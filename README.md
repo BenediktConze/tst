@@ -7,6 +7,7 @@ LLVM TypeSanitizer (which is the reason I implemented this).
 ## Usage
 
 ```cpp
+#include <cmath>
 #include <stdexcept>
 #include <vector>
 #include "tst/tst.hpp"
@@ -18,8 +19,14 @@ TEST(SuiteName, TestName) {
     EXPECT_EQ(i, 1);
     EXPECT_TRUE(true);
 
+    // Floating point comparisons based on ULP difference
+    EXPECT_FLOAT_EQ(0.1f, std::nextafter(0.1f, 1.f));
+
+    // Floating point comparisons based on absolute error
+    EXPECT_NEAR(0.1, 0.1f, 0.000001);
+
     // Safe C-String comparisons
-    EXPECT_STRCASEEQ("abc", "ABC")
+    EXPECT_STRCASEEQ("abc", "ABC");
 
     // Test if exceptions are thrown
     std::vector<int> v;
@@ -49,7 +56,6 @@ int main() {
 ## Roadmap (Maybe)
 - More expressive parametrized tests
 - Fixtures and typed tests
-- Floating point assertions
 
 ## Intentional Omissions
 - Death tests

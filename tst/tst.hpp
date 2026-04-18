@@ -1,8 +1,10 @@
 #pragma once
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <cstring>
@@ -10,6 +12,7 @@
 #include <format>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <numeric>
 #include <string>
@@ -421,6 +424,90 @@ namespace tst {
     // Ensure both strings reached the end
     return *s1 == *s2;
 }
+
+// Implementation of floatAlmostEqual adapted from Bruce Dawson (Random ASCII blog)
+template <typename Float>
+[[nodiscard]] inline bool floatAlmostEqual(Float val1, Float val2) {
+    static constexpr auto maxUlpsDiff = 4;
+    static constexpr auto maxAbsDiff = std::numeric_limits<Float>::denorm_min() * maxUlpsDiff;
+
+    // Comparing NaN always yields false
+    if (std::isnan(val1) || std::isnan(val2)) return false;
+
+    // Check if the numbers are really close - needed when comparing numbers near zero
+    // Also takes care of comparing +0 to -0
+    const auto absDiff = std::abs(val1 - val2);
+    if (absDiff <= maxAbsDiff) return true;
+
+    // Different signs means they do not match.
+    // Also takes care of comparing +inf to -inf
+    if (std::signbit(val1) != std::signbit(val2)) return false;
+
+    // Find the difference in ULPs
+    using Int = std::conditional_t<sizeof(Float) == 4, std::int32_t, std::int64_t>;
+    static_assert(sizeof(Int) == sizeof(Float));
+
+    const auto val1Int = std::bit_cast<Int>(val1);
+    const auto val2Int = std::bit_cast<Int>(val2);
+    // The ulpsDiff calculation cannot overflow since they have the same sign
+    const auto ulpsDiff = std::abs(val1Int - val2Int);
+
+    return ulpsDiff <= maxUlpsDiff;
+}
+
+// Implementation of testNear adapted from googletest's DoubleNearPredFormat
+inline void testNear(const char* expr1, const char* expr2, const char* abs_error_expr, double val1,
+                     double val2, double abs_error, FailureHandler f, const char* file, int line) {
+    // We want to return success when the two values are infinity and at least one of the following
+    // is true:
+    //  - The values are the same-signed infinity.
+    //  - The error limit itself is infinity.
+    // This is done here so that we don't end up with a NaN when calculating the difference in
+    // values.
+    if (std::isinf(val1) && std::isinf(val2) &&
+        (std::signbit(val1) == std::signbit(val2) || (abs_error > 0.0 && std::isinf(abs_error)))) {
+        return;
+    }
+
+    const double diff = std::abs(val1 - val2);
+    if (diff <= abs_error) return;
+
+    // Find the value which is closest to zero.
+    const double min_abs = std::min(std::abs(val1), std::abs(val2));
+    // Find the distance to the next double from that value.
+    const double epsilon =
+        std::nextafter(min_abs, std::numeric_limits<double>::infinity()) - min_abs;
+    // Detect the case where abs_error is so small that EXPECT_NEAR is effectively the same as
+    // EXPECT_EQUAL, and give an informative error message so that the situation can be more easily
+    // understood without requiring exotic floating-point knowledge.
+    // Don't do an epsilon check if abs_error is zero because that implies that an equality check
+    // was actually intended.
+    if (!(std::isnan)(val1) && !(std::isnan)(val2) && abs_error > 0 && abs_error < epsilon) {
+        std::cout
+            << std::format(
+                   "{8}({9}): error: The difference between {0} and {1} is {2}, where\n{0} "
+                   "evaluates to {3},\n{1} evaluates to {4}.\nThe abs_error parameter {5} "
+                   "evaluates to {6} which is smaller than "
+                   "the minimum distance between doubles for numbers of this magnitude which is "
+                   "{7}, thus "
+                   "making this EXPECT_NEAR check equivalent to EXPECT_EQUAL. Consider using "
+                   "EXPECT_DOUBLE_EQ instead.",
+                   expr1, expr2, diff, val1, val2, abs_error_expr, abs_error, epsilon, file, line)
+            << std::endl;
+    } else {
+        std::cout
+            << std::format(
+                   "{7}({8}): error: The difference between {0} and {1} is {2}, which exceeds "
+                   "{5}, where\n{0} "
+                   "evaluates to {3},\n{1} evaluates to {4}, and\n{5} evaluates to {6}.",
+                   expr1, expr2, diff, val1, val2, abs_error_expr, abs_error, file, line)
+            << std::endl;
+    }
+
+    // Call FailureHandler
+    f();
+}
+
 }  // namespace tst
 
 #define TEST_CSTRING(s1, s2, expected, FailureHandler)                                             \
@@ -437,36 +524,25 @@ namespace tst {
         }                                                                                          \
     } while (false)
 
+#define TEST_NEAR(s1, s2, expected, FailureHandler)                                                \
+    do {                                                                                           \
+        TST_IF_UNLIKELY(tst::cstrIEqual(s1, s2) != expected) {                                     \
+            tst::predicateTestFailure(s1, s2, #s1, #s2, "==", FailureHandler, __FILE__, __LINE__); \
+        }                                                                                          \
+    } while (false)
+
+#define TEST_FLOAT_EQ(f1, f2, fType, FailureHandler)                                               \
+    do {                                                                                           \
+        TST_IF_UNLIKELY(!tst::floatAlmostEqual<fType>(f1, f2)) {                                   \
+            tst::predicateTestFailure(f1, f2, #f1, #f2, "==", FailureHandler, __FILE__, __LINE__); \
+        }                                                                                          \
+    } while (false)
+
 #define TEST_FAIL(FailureHandler)                                                               \
     do {                                                                                        \
         std::cout << std::format("{}({}): error: Explicit test failure\n", __FILE__, __LINE__); \
         FailureHandler();                                                                       \
     } while (false)
-
-// Explicit failures
-#define ADD_FAILURE() TEST_FAIL(tst::nonFatalFailure)
-#define FAIL() TEST_FAIL(tst::fatalFailure)
-
-// Verify condition
-#define EXPECT_TRUE(condition) TEST_BOOLEAN(condition, true, tst::nonFatalFailure)
-#define EXPECT_FALSE(condition) TEST_BOOLEAN(condition, false, tst::nonFatalFailure)
-#define ASSERT_TRUE(condition) TEST_BOOLEAN(condition, true, tst::fatalFailure)
-#define ASSERT_FALSE(condition) TEST_BOOLEAN(condition, false, tst::fatalFailure)
-
-// Binary comparisons
-#define EXPECT_EQ(val1, val2) TEST_PREDICATE(val1, val2, ==, tst::nonFatalFailure)
-#define EXPECT_NE(val1, val2) TEST_PREDICATE(val1, val2, !=, tst::nonFatalFailure)
-#define EXPECT_LE(val1, val2) TEST_PREDICATE(val1, val2, <=, tst::nonFatalFailure)
-#define EXPECT_LT(val1, val2) TEST_PREDICATE(val1, val2, <, tst::nonFatalFailure)
-#define EXPECT_GE(val1, val2) TEST_PREDICATE(val1, val2, >=, tst::nonFatalFailure)
-#define EXPECT_GT(val1, val2) TEST_PREDICATE(val1, val2, >, tst::nonFatalFailure)
-
-#define ASSERT_EQ(val1, val2) TEST_PREDICATE(val1, val2, ==, tst::fatalFailure)
-#define ASSERT_NE(val1, val2) TEST_PREDICATE(val1, val2, !=, tst::fatalFailure)
-#define ASSERT_LE(val1, val2) TEST_PREDICATE(val1, val2, <=, tst::fatalFailure)
-#define ASSERT_LT(val1, val2) TEST_PREDICATE(val1, val2, <, tst::fatalFailure)
-#define ASSERT_GE(val1, val2) TEST_PREDICATE(val1, val2, >=, tst::fatalFailure)
-#define ASSERT_GT(val1, val2) TEST_PREDICATE(val1, val2, >, tst::fatalFailure)
 
 #define TEST_THROW(statement, ExceptionType, FailureHandler)                                     \
     do {                                                                                         \
@@ -494,6 +570,31 @@ namespace tst {
             FailureHandler();                                                            \
         }                                                                                \
     } while (false)
+
+// Explicit failures
+#define ADD_FAILURE() TEST_FAIL(tst::nonFatalFailure)
+#define FAIL() TEST_FAIL(tst::fatalFailure)
+
+// Verify condition
+#define EXPECT_TRUE(condition) TEST_BOOLEAN(condition, true, tst::nonFatalFailure)
+#define EXPECT_FALSE(condition) TEST_BOOLEAN(condition, false, tst::nonFatalFailure)
+#define ASSERT_TRUE(condition) TEST_BOOLEAN(condition, true, tst::fatalFailure)
+#define ASSERT_FALSE(condition) TEST_BOOLEAN(condition, false, tst::fatalFailure)
+
+// Binary comparisons
+#define EXPECT_EQ(val1, val2) TEST_PREDICATE(val1, val2, ==, tst::nonFatalFailure)
+#define EXPECT_NE(val1, val2) TEST_PREDICATE(val1, val2, !=, tst::nonFatalFailure)
+#define EXPECT_LE(val1, val2) TEST_PREDICATE(val1, val2, <=, tst::nonFatalFailure)
+#define EXPECT_LT(val1, val2) TEST_PREDICATE(val1, val2, <, tst::nonFatalFailure)
+#define EXPECT_GE(val1, val2) TEST_PREDICATE(val1, val2, >=, tst::nonFatalFailure)
+#define EXPECT_GT(val1, val2) TEST_PREDICATE(val1, val2, >, tst::nonFatalFailure)
+
+#define ASSERT_EQ(val1, val2) TEST_PREDICATE(val1, val2, ==, tst::fatalFailure)
+#define ASSERT_NE(val1, val2) TEST_PREDICATE(val1, val2, !=, tst::fatalFailure)
+#define ASSERT_LE(val1, val2) TEST_PREDICATE(val1, val2, <=, tst::fatalFailure)
+#define ASSERT_LT(val1, val2) TEST_PREDICATE(val1, val2, <, tst::fatalFailure)
+#define ASSERT_GE(val1, val2) TEST_PREDICATE(val1, val2, >=, tst::fatalFailure)
+#define ASSERT_GT(val1, val2) TEST_PREDICATE(val1, val2, >, tst::fatalFailure)
 
 // Exception assertions
 #define EXPECT_THROW(statement, ExceptionType) \
@@ -530,3 +631,17 @@ namespace tst {
 #define ASSERT_STRNE(s1, s2) TEST_CSTRING(s1, s2, false, tst::fatalFailure)
 #define ASSERT_STRCASEEQ(s1, s2) TEST_CSTRING_ICASE(s1, s2, true, tst::fatalFailure)
 #define ASSERT_STRCASENE(s1, s2) TEST_CSTRING_ICASE(s1, s2, false, tst::fatalFailure)
+
+// Floating-point comparisons: Test that two values are within 4 ULP, or both within 4 ULP of 0.
+#define EXPECT_FLOAT_EQ(val1, val2) TEST_FLOAT_EQ(val1, val2, float, tst::nonFatalFailure)
+#define EXPECT_DOUBLE_EQ(val1, val2) TEST_FLOAT_EQ(val1, val2, double, tst::nonFatalFailure)
+#define ASSERT_FLOAT_EQ(val1, val2) TEST_FLOAT_EQ(val1, val2, float, tst::fatalFailure)
+#define ASSERT_DOUBLE_EQ(val1, val2) TEST_FLOAT_EQ(val1, val2, double, tst::fatalFailure)
+
+// Floating-point comparisons: Test that two values do not differ by more than abs_error
+#define EXPECT_NEAR(val1, val2, abs_error)                                                         \
+    tst::testNear(#val1, #val2, #abs_error, val1, val2, abs_error, tst::nonFatalFailure, __FILE__, \
+                  __LINE__)
+
+#define ASSERT_NEAR(val1, val2, abs_error) \
+    tst::testNear(val1, val2, abs_error, tst::fatalFailure, __FILE__, __LINE__)
