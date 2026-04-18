@@ -5,6 +5,7 @@
 #include <chrono>
 #include <concepts>
 #include <cstddef>
+#include <cstring>
 #include <exception>
 #include <format>
 #include <functional>
@@ -73,7 +74,8 @@ template <>
 struct std::formatter<tst::Plural> : std::formatter<std::size_t> {
     auto format(const tst::Plural& p, format_context& ctx) const {
         // Determine the suffix based on the last character of the label
-        const bool isUpper = !p.label.empty() && std::isupper(p.label.back());
+        const bool isUpper =
+            !p.label.empty() && std::isupper(static_cast<unsigned char>(p.label.back()));
 
         const std::string_view suffix = (p.count == 1) ? "" : (isUpper ? "S" : "s");
 
@@ -395,6 +397,46 @@ inline void predicateTestFailure(const T1& actualPredicateValue, const T2& expec
         }                                                                                     \
     } while (false)
 
+namespace tst {
+[[nodiscard]] inline bool cstrEqual(const char* s1, const char* s2) {
+    if (s1 == nullptr) return s2 == nullptr;
+    if (s2 == nullptr) return false;
+
+    return std::strcmp(s1, s2) == 0;
+}
+// Case independent
+[[nodiscard]] inline bool cstrIEqual(const char* s1, const char* s2) {
+    if (s1 == nullptr) return s2 == nullptr;
+    if (s2 == nullptr) return false;
+
+    while (*s1 != '\0') {
+        if (std::tolower(static_cast<unsigned char>(*s1)) !=
+            std::tolower(static_cast<unsigned char>(*s2))) {
+            return false;
+        }
+        ++s1;
+        ++s2;
+    }
+
+    // Ensure both strings reached the end
+    return *s1 == *s2;
+}
+}  // namespace tst
+
+#define TEST_CSTRING(s1, s2, expected, FailureHandler)                                             \
+    do {                                                                                           \
+        TST_IF_UNLIKELY(tst::cstrEqual(s1, s2) != expected) {                                      \
+            tst::predicateTestFailure(s1, s2, #s1, #s2, "==", FailureHandler, __FILE__, __LINE__); \
+        }                                                                                          \
+    } while (false)
+
+#define TEST_CSTRING_ICASE(s1, s2, expected, FailureHandler)                                       \
+    do {                                                                                           \
+        TST_IF_UNLIKELY(tst::cstrIEqual(s1, s2) != expected) {                                     \
+            tst::predicateTestFailure(s1, s2, #s1, #s2, "==", FailureHandler, __FILE__, __LINE__); \
+        }                                                                                          \
+    } while (false)
+
 #define TEST_FAIL(FailureHandler)                                                               \
     do {                                                                                        \
         std::cout << std::format("{}({}): error: Explicit test failure\n", __FILE__, __LINE__); \
@@ -477,3 +519,14 @@ inline void predicateTestFailure(const T1& actualPredicateValue, const T2& expec
             statement;                                         \
         }                                                      \
     } while (false)
+
+// C-string comparisons
+#define EXPECT_STREQ(s1, s2) TEST_CSTRING(s1, s2, true, tst::nonFatalFailure)
+#define EXPECT_STRNE(s1, s2) TEST_CSTRING(s1, s2, false, tst::nonFatalFailure)
+#define EXPECT_STRCASEEQ(s1, s2) TEST_CSTRING_ICASE(s1, s2, true, tst::nonFatalFailure)
+#define EXPECT_STRCASENE(s1, s2) TEST_CSTRING_ICASE(s1, s2, false, tst::nonFatalFailure)
+
+#define ASSERT_STREQ(s1, s2) TEST_CSTRING(s1, s2, true, tst::fatalFailure)
+#define ASSERT_STRNE(s1, s2) TEST_CSTRING(s1, s2, false, tst::fatalFailure)
+#define ASSERT_STRCASEEQ(s1, s2) TEST_CSTRING_ICASE(s1, s2, true, tst::fatalFailure)
+#define ASSERT_STRCASENE(s1, s2) TEST_CSTRING_ICASE(s1, s2, false, tst::fatalFailure)

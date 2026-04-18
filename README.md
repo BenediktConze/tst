@@ -18,6 +18,9 @@ TEST(SuiteName, TestName) {
     EXPECT_EQ(i, 1);
     EXPECT_TRUE(true);
 
+    // Safe C-String comparisons
+    EXPECT_STRCASEEQ("abc", "ABC")
+
     // Test if exceptions are thrown
     std::vector<int> v;
     EXPECT_THROW(i = v.at(0), std::out_of_range);
@@ -46,7 +49,7 @@ int main() {
 ## Roadmap (Maybe)
 - More expressive parametrized tests
 - Fixtures and typed tests
-- String and floating point assertions
+- Floating point assertions
 
 ## Intentional Omissions
 - Death tests
