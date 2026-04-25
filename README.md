@@ -65,6 +65,18 @@ TEST_P(SuiteName, ParamTest, int i) {
 INSTANTIATE_TEST_SUITE_P(SuiteName, ParamTest, 0);
 INSTANTIATE_TEST_SUITE_P(SuiteName, ParamTest, 1);
 
+// Type-parametrized unit test
+template <typename T>
+struct MyTypedFixture : tst::FixtureBase {
+    std::vector<T> value;
+};
+
+TYPED_TEST_SUITE(MyTypedFixture, int, double, char);
+TYPED_TEST(MyTypedFixture, PushBack) {
+    this->value.push_back(TypeParam{});
+    EXPECT_LE(sizeof(TypeParam), 8);
+}
+
 int main() {
     // Call this once from anywhere
     GlobalTestManager::getInstance().runAllTests();
@@ -73,7 +85,6 @@ int main() {
 
 ## Roadmap (Maybe)
 - More expressive parametrized tests
-- Typed tests
 
 ## Intentional Omissions
 - Death tests

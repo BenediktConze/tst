@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cctype>
 #include <chrono>
@@ -23,8 +24,6 @@
 #include <vector>
 
 namespace tst {
-struct TestRegistrar;
-
 // ANSI color codes
 inline constexpr auto ANSI_RED = "\x1B[31m";
 inline constexpr auto ANSI_GREEN = "\x1B[32m";
@@ -69,6 +68,19 @@ enum class Status {
     TestSkip,    // [  SKIPPED ] (Green)
     NrPassed,    // [  PASSED  ] (Green)
 };
+
+// Busywork C++ makes us do to enable transparent lookup in hash maps
+struct TransparentStringHash {
+    using HashType = std::hash<std::string_view>;
+
+    using is_transparent = void;
+
+    auto operator()(const char* str) const { return HashType{}(str); }
+    auto operator()(std::string_view str) const { return HashType{}(str); }
+    auto operator()(const std::string& str) const { return HashType{}(str); }
+};
+
+struct PredicateFailureException : std::exception {};
 
 }  // namespace tst
 
@@ -168,9 +180,9 @@ struct GlobalTestManager {
                                   [](const decltype(tests)::value_type& v) {
                                       return static_cast<unsigned>(v.second.size());
                                   });
-        auto nrSuccessfulTests = 0u;
-        std::vector<std::string> skippedTests{};
-        std::vector<std::string> failedTests{};
+        nrSuccessfulTests = 0u;
+        skippedTests = {};
+        failedTests = {};
 
         std::cout << std::format("{} Running {} from {}.\n", Status::TestingSep,
                                  Plural{nrTests, "test"}, Plural{nrTestSuites, "test suite"});
@@ -182,16 +194,7 @@ struct GlobalTestManager {
             auto suiteT1 = steady_clock::now();
             for (const auto& [testName, testFunction] : testSuiteTests) {
                 // Test function wrapper is called here
-                testFunction();
-                if (activeTestFailures > 0) {
-                    failedTests.emplace_back(std::format("{}.{}", testSuiteName, testName));
-                } else if (activeTestSkipped) {
-                    skippedTests.emplace_back(std::format("{}.{}", testSuiteName, testName));
-                } else {
-                    ++nrSuccessfulTests;
-                }
-                activeTestFailures = 0;
-                activeTestSkipped = false;
+                runTestWrapped(testSuiteName, testName, testFunction);
             }
             auto suiteT2 = steady_clock::now();
             std::cout << std::format("{} {} from {} ({} total)\n\n", Status::SuiteSep,
@@ -247,69 +250,98 @@ struct GlobalTestManager {
     int activeTestFailures = 0;
     bool activeTestSkipped = false;
 
-   private:
-    void add(const std::string& testSuite, const std::string& test,
-             const std::function<void()>& fun) {
+    void add(std::string_view testSuite, std::string test, std::function<void()> fun) {
         const std::scoped_lock lock(testAppendLock);
-        tests[testSuite].emplace_back(test, fun);
+
+        // Using find for transparent lookup
+        auto it = tests.find(testSuite);
+
+        // Create new test suite if necessary
+        if (it == tests.end()) {
+            it = tests.try_emplace(std::string(testSuite)).first;
+        }
+
+        // Add test to list of test suite test functions
+        it->second.emplace_back(std::move(test), std::move(fun));
+    }
+
+   private:
+    // Call the actual test function, catch all potential errors, time the whole thing and print all
+    // the info
+    void runTestWrapped(std::string_view suiteName, std::string_view testName,
+                        const std::function<void()>& fun) {
+        using namespace std::chrono;
+        using namespace tst;
+        std::cout << std::format("{} {}", Status::TestRun, testName) << std::endl;
+        const auto t1 = steady_clock::now();
+        try {
+            // This actually calls the test function
+            fun();
+        } catch (PredicateFailureException&) {
+            // The test failure counter should already be incremented, unless the
+            // user manually threw a PredicateFailureException
+            if (activeTestFailures == 0) {
+                activeTestFailures = 1;
+            }
+        } catch (std::exception& e) {
+            std::cout << std::format("Exception was thrown during test execution: {}\n", e.what());
+            ++activeTestFailures;
+        } catch (...) {
+            std::cout << "Unknown exception was thrown during test execution.\n";
+            ++activeTestFailures;
+        }
+        const auto t2 = steady_clock::now();
+        if (activeTestFailures > 0) {
+            std::cout << std::format("{}", Status::TestFail);
+        } else if (activeTestSkipped) {
+            std::cout << std::format("{}", Status::TestSkip);
+        } else {
+            std::cout << std::format("{}", Status::TestOk);
+        }
+        std::cout << std::format(" {} ({})", testName, duration_cast<milliseconds>(t2 - t1))
+                  << std::endl;
+
+        // Evaluate test failures / skips
+        if (activeTestFailures > 0) {
+            failedTests.emplace_back(std::format("{}.{}", suiteName, testName));
+        } else if (activeTestSkipped) {
+            skippedTests.emplace_back(std::format("{}.{}", suiteName, testName));
+        } else {
+            ++nrSuccessfulTests;
+        }
+        activeTestFailures = 0;
+        activeTestSkipped = false;
     }
 
     // Maps test suit names to vector testname-testfunction-pairs
-    std::unordered_map<std::string, std::vector<std::pair<std::string, std::function<void()>>>>
+    std::unordered_map<std::string, std::vector<std::pair<std::string, std::function<void()>>>,
+                       tst::TransparentStringHash, std::equal_to<>>
         tests;
 
     // During initialization, locks the tests map while objects are appended
     std::mutex testAppendLock;
 
+    // Keep track of test results during runAllTests
+    unsigned nrSuccessfulTests = 0u;
+    std::vector<std::string> skippedTests{};
+    std::vector<std::string> failedTests{};
+
     // Don't allow new instantiations of singleton
     GlobalTestManager() = default;
-
-    friend struct tst::TestRegistrar;
 };
 
 namespace tst {
-struct PredicateFailureException : std::exception {};
-
-// Run and time the given test function and print the result.
-inline void printRunTest(const char* fullTestName, const std::function<void()>& fun) {
-    using namespace std::chrono;
-    std::cout << std::format("{} {}", Status::TestRun, fullTestName) << std::endl;
-    const auto t1 = steady_clock::now();
-    try {
-        // This actually calls the test function
-        fun();
-    } catch (PredicateFailureException&) {
-        // The test failure counter should already be incremented, unless the
-        // user manually threw a PredicateFailureException
-        if (GlobalTestManager::getInstance().activeTestFailures == 0) {
-            GlobalTestManager::getInstance().activeTestFailures = 1;
-        }
-    } catch (std::exception& e) {
-        std::cout << std::format("Exception was thrown during test execution: {}\n", e.what());
-        ++GlobalTestManager::getInstance().activeTestFailures;
-    } catch (...) {
-        std::cout << "Unknown exception was thrown during test execution.\n";
-        ++GlobalTestManager::getInstance().activeTestFailures;
-    }
-    const auto t2 = steady_clock::now();
-    if (GlobalTestManager::getInstance().activeTestFailures > 0) {
-        std::cout << std::format("{}", Status::TestFail);
-    } else if (GlobalTestManager::getInstance().activeTestSkipped) {
-        std::cout << std::format("{}", Status::TestSkip);
-    } else {
-        std::cout << std::format("{}", Status::TestOk);
-    }
-    std::cout << std::format(" {} ({})", fullTestName, duration_cast<milliseconds>(t2 - t1))
-              << std::endl;
-}
-
 // The TEST macros create global objects of this type so that its constructor
 // registers the test function.
 struct TestRegistrar {
-    TestRegistrar(const char* testSuiteName, const char* testName,
-                  const std::function<void()>& fun) {
-        GlobalTestManager::getInstance().add(testSuiteName, testName, fun);
+    // Registers the test function fun under the given names
+    TestRegistrar(std::string_view testSuiteName, std::string_view testName,
+                  std::function<void()> fun) {
+        GlobalTestManager::getInstance().add(testSuiteName, std::string{testName}, std::move(fun));
     }
+
+    // Leaves the registration logic to the caller
+    TestRegistrar(auto&& registration) { registration(); }
 };
 
 // Test fixtures
@@ -359,23 +391,21 @@ inline void predicateTestFailure(const T1& actualPredicateValue, const T2& expec
 }  // namespace tst
 
 // Define a test function
-#define TEST(TestSuite, Test)                                                           \
-    static void TestSuite##_##Test##TestFun();                                          \
-    const tst::TestRegistrar TestSuite##_##Test##_##Registrar(#TestSuite, #Test, []() { \
-        tst::printRunTest(#TestSuite "." #Test, TestSuite##_##Test##TestFun);           \
-    });                                                                                 \
+#define TEST(TestSuite, Test)                                                               \
+    static void TestSuite##_##Test##TestFun();                                              \
+    const tst::TestRegistrar TestSuite##_##Test##_##Registrar(#TestSuite, #Test,            \
+                                                              TestSuite##_##Test##TestFun); \
     static void TestSuite##_##Test##TestFun()
 
 // Define a parametrized test function
 #define TEST_P(TestSuite, Test, Parameter) static void TestSuite##_##Test##TestFun(Parameter)
 
 // Instantiate a parametrized test function with a value for the parameter
-#define INSTANTIATE_TEST_SUITE_P(TestSuite, Test, ParameterValue)                      \
-    const tst::TestRegistrar TestSuite##_##Test##_##Registrar_##ParameterValue(        \
-        #TestSuite, #Test "/" #ParameterValue, []() {                                  \
-            tst::printRunTest(#TestSuite "." #Test "/" #ParameterValue,                \
-                              std::bind(TestSuite##_##Test##TestFun, ParameterValue)); \
-        })
+// TODO: better interface and/or not a separate std::function object per parameter value
+#define INSTANTIATE_TEST_SUITE_P(TestSuite, Test, ParameterValue)               \
+    const tst::TestRegistrar TestSuite##_##Test##_##Registrar_##ParameterValue( \
+        #TestSuite, #Test "/" #ParameterValue,                                  \
+        []() { TestSuite##_##Test##TestFun(ParameterValue); })
 
 #if defined(_MSC_VER) && !defined(__clang__)
 #define TST_SUPPRESS_CONSTANT_CONDITIONAL_EXPRESSION_WARNING __pragma(warning(suppress : 4127))
@@ -665,7 +695,87 @@ inline void testNear(const char* expr1, const char* expr2, const char* abs_error
     };                                                                                      \
     const tst::TestRegistrar TestFixture##_##Test##_##Registrar(#TestFixture, #Test, []() { \
         TestFixture##_##Test t;                                                             \
-        tst::printRunTest(#TestFixture "." #Test,                                           \
-                          std::bind(&TestFixture##_##Test::tstFixtureFun, &t));             \
+        t.tstFixtureFun();                                                                  \
     });                                                                                     \
     void TestFixture##_##Test::tstFixtureFun()
+
+// Helpers for typed tests
+namespace tst {
+// Store list of types
+template <typename... Ts>
+struct Types {};
+
+// Count (comma-separated) types in a string of the form "int, long, short"
+[[nodiscard]] consteval int countTypes(std::string_view str) {
+    if (str.empty()) return 0;
+    return static_cast<int>(std::count(str.begin(), str.end(), ',')) + 1;
+}
+
+// Return n-th type in a comma-separated type list
+[[nodiscard]] consteval std::string_view findNthType(int n, std::string_view str) {
+    auto start = std::size_t{0};
+    auto end = static_cast<std::size_t>(-2);
+
+    for (int i = 0; i <= n; ++i) {
+        // Skip leading commas and spaces
+        start = end + 2;
+        if (start >= str.length()) return "";
+
+        end = str.find(',', start);  // Find the next comma
+        if (end == std::string_view::npos) end = str.size();
+    }
+
+    return str.substr(start, end - start);
+}
+
+// Registers the test function from the Fixture with each type in the type list Ts
+template <template <typename> class Fixture, typename Array, typename... Ts>
+void registerTyped(Types<Ts...>, std::string_view suiteName, std::string_view testName,
+                   const Array& typeNameArray) {
+    int typeNameIndex = 0;
+    // Fold expression that creates lambdas for all test instances
+    (
+        [&] {
+            auto fullTestName = std::string(testName) + "/";
+            fullTestName += typeNameArray[typeNameIndex++];
+            // Lambda that runs this particular test instance
+            auto testBody = []() {
+                Fixture<Ts> instance;
+                instance.tstFixtureFun();
+            };
+            GlobalTestManager::getInstance().add(suiteName, std::move(fullTestName),
+                                                 std::move(testBody));
+        }(),
+        ...);
+}
+
+// Create array of string_views for individual type names in the string str
+template <size_t... Is>
+consteval auto makeTypeNameArray(std::string_view str, std::index_sequence<Is...>) {
+    return std::array<std::string_view, sizeof...(Is)>{findNthType(Is, str)...};
+}
+}  // namespace tst
+
+// Declare all types for which the fixture test function will be run
+#define TYPED_TEST_SUITE(FixtureName, ...)                                           \
+    using FixtureName##_Types = tst::Types<__VA_ARGS__>;                             \
+    static constexpr std::string_view FixtureName##_TypesString = #__VA_ARGS__;      \
+    static constexpr auto FixtureName##_TypeNameArray = []() {                       \
+        return tst::makeTypeNameArray(                                               \
+            FixtureName##_TypesString,                                               \
+            std::make_index_sequence<tst::countTypes(FixtureName##_TypesString)>{}); \
+    }()
+
+// Define a function of a typed test fixture
+#define TYPED_TEST(FixtureName, TestName)                                                 \
+    template <typename TypeParam>                                                         \
+    class FixtureName##_##TestName##_Test : public FixtureName<TypeParam> {               \
+       public:                                                                            \
+        void tstFixtureFun();                                                             \
+    };                                                                                    \
+    const tst::TestRegistrar FixtureName##_##TestName##_Reg([]() {                        \
+        tst::registerTyped<FixtureName##_##TestName##_Test>(                              \
+            FixtureName##_Types{}, #FixtureName, #TestName, FixtureName##_TypeNameArray); \
+    });                                                                                   \
+    template <typename TypeParam>                                                         \
+    void FixtureName##_##TestName##_Test<TypeParam>::tstFixtureFun()
