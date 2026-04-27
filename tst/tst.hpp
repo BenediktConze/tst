@@ -82,6 +82,8 @@ struct TransparentStringHash {
 
 struct PredicateFailureException : std::exception {};
 
+struct SkipTestException : std::exception {};
+
 }  // namespace tst
 
 // Print singular or plural depending on count
@@ -243,12 +245,11 @@ struct GlobalTestManager {
         return !failedTests.empty();
     }
 
-    // Global variables that the currently running test writes to during a test
-    // and the test manager reads from after a test.
-    // Passing these values around via the test function return would make
-    // calling subroutines in test functions more difficult.
+    // Global variable that the currently running test conditionally increments during a test and
+    // the test manager reads from after a test.
+    // Passing this value around via the test function return would make calling subroutines in test
+    // functions more difficult.
     int activeTestFailures = 0;
-    bool activeTestSkipped = false;
 
     void add(std::string_view testSuite, std::string test, std::function<void()> fun) {
         const std::scoped_lock lock(testAppendLock);
@@ -274,6 +275,8 @@ struct GlobalTestManager {
         using namespace tst;
         std::cout << std::format("{} {}", Status::TestRun, testName) << std::endl;
         const auto t1 = steady_clock::now();
+        bool activeTestSkipped = false;
+
         try {
             // This actually calls the test function
             fun();
@@ -283,6 +286,8 @@ struct GlobalTestManager {
             if (activeTestFailures == 0) {
                 activeTestFailures = 1;
             }
+        } catch (SkipTestException&) {
+            activeTestSkipped = true;
         } catch (std::exception& e) {
             std::cout << std::format("Exception was thrown during test execution: {}\n", e.what());
             ++activeTestFailures;
@@ -291,26 +296,21 @@ struct GlobalTestManager {
             ++activeTestFailures;
         }
         const auto t2 = steady_clock::now();
+
         if (activeTestFailures > 0) {
             std::cout << std::format("{}", Status::TestFail);
+            failedTests.emplace_back(std::format("{}.{}", suiteName, testName));
         } else if (activeTestSkipped) {
             std::cout << std::format("{}", Status::TestSkip);
+            skippedTests.emplace_back(std::format("{}.{}", suiteName, testName));
         } else {
             std::cout << std::format("{}", Status::TestOk);
+            ++nrSuccessfulTests;
         }
         std::cout << std::format(" {} ({})", testName, duration_cast<milliseconds>(t2 - t1))
                   << std::endl;
 
-        // Evaluate test failures / skips
-        if (activeTestFailures > 0) {
-            failedTests.emplace_back(std::format("{}.{}", suiteName, testName));
-        } else if (activeTestSkipped) {
-            skippedTests.emplace_back(std::format("{}.{}", suiteName, testName));
-        } else {
-            ++nrSuccessfulTests;
-        }
         activeTestFailures = 0;
-        activeTestSkipped = false;
     }
 
     // Maps test suit names to vector testname-testfunction-pairs
@@ -644,19 +644,19 @@ inline void testNear(const char* expr1, const char* expr2, const char* abs_error
 #define ASSERT_ANY_THROW(statement) TEST_THROW(statement, ..., tst::fatalFailure)
 #define ASSERT_NO_THROW(statement) TEST_NO_THROW(statement, tst::fatalFailure)
 
-// Skip the current test
-#define SKIP_TEST()                                                \
-    do {                                                           \
-        GlobalTestManager::getInstance().activeTestSkipped = true; \
-        return;                                                    \
-    } while (false)
-
 // Useful together with SKIP_TEST
 #define TST_SUPPRESS_UNREACHABLE_CODE_WARNING_BELOW(statement) \
     do {                                                       \
         if (tst::alwaysTrue()) {                               \
             statement;                                         \
         }                                                      \
+    } while (false)
+
+// Skip the current test
+// todo: noreturn
+#define SKIP_TEST()                                                                  \
+    do {                                                                             \
+        TST_SUPPRESS_UNREACHABLE_CODE_WARNING_BELOW(throw tst::SkipTestException{}); \
     } while (false)
 
 // C-string comparisons
