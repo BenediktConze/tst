@@ -32,6 +32,7 @@ inline constexpr auto ANSI_RESET = "\033[0m";
 // Concept for types which can be printed with std::format
 // Mostly equivalent to C++23 std::formattable
 // For simplicity only compatible with char, not wchar
+// TODO: doesn't seem to work with "streamable" types!
 template <typename T, typename Context,
           typename Formatter = Context::template formatter_type<std::remove_const_t<T>>>
 concept FormattableWith =
@@ -273,7 +274,7 @@ struct GlobalTestManager {
                         const std::function<void()>& fun) {
         using namespace std::chrono;
         using namespace tst;
-        std::cout << std::format("{} {}", Status::TestRun, testName) << std::endl;
+        std::cout << std::format("{} {}.{}", Status::TestRun, suiteName, testName) << std::endl;
         const auto t1 = steady_clock::now();
         bool activeTestSkipped = false;
 
@@ -307,7 +308,8 @@ struct GlobalTestManager {
             std::cout << std::format("{}", Status::TestOk);
             ++nrSuccessfulTests;
         }
-        std::cout << std::format(" {} ({})", testName, duration_cast<milliseconds>(t2 - t1))
+        std::cout << std::format(" {}.{} ({})", suiteName, testName,
+                                 duration_cast<milliseconds>(t2 - t1))
                   << std::endl;
 
         activeTestFailures = 0;
@@ -529,7 +531,7 @@ inline void testNear(const char* expr1, const char* expr2, const char* abs_error
                    "the minimum distance between doubles for numbers of this magnitude which is "
                    "{7}, thus "
                    "making this EXPECT_NEAR check equivalent to EXPECT_EQUAL. Consider using "
-                   "EXPECT_DOUBLE_EQ instead.",
+                   "EXPECT_DOUBLE_EQ instead.\n",
                    expr1, expr2, diff, val1, val2, abs_error_expr, abs_error, epsilon, file, line)
             << std::endl;
     } else {
@@ -537,7 +539,7 @@ inline void testNear(const char* expr1, const char* expr2, const char* abs_error
             << std::format(
                    "{7}({8}): error: The difference between {0} and {1} is {2}, which exceeds "
                    "{5}, where\n{0} "
-                   "evaluates to {3},\n{1} evaluates to {4}, and\n{5} evaluates to {6}.",
+                   "evaluates to {3},\n{1} evaluates to {4}, and\n{5} evaluates to {6}.\n",
                    expr1, expr2, diff, val1, val2, abs_error_expr, abs_error, file, line)
             << std::endl;
     }
@@ -653,10 +655,10 @@ inline void testNear(const char* expr1, const char* expr2, const char* abs_error
     } while (false)
 
 // Skip the current test
-// todo: noreturn
-#define SKIP_TEST()                                                                  \
-    do {                                                                             \
-        TST_SUPPRESS_UNREACHABLE_CODE_WARNING_BELOW(throw tst::SkipTestException{}); \
+#define SKIP_TEST()                                                                     \
+    do {                                                                                \
+        std::cout << std::format("{}({}): Skipped\n", __FILE__, __LINE__) << std::endl; \
+        TST_SUPPRESS_UNREACHABLE_CODE_WARNING_BELOW(throw tst::SkipTestException{});    \
     } while (false)
 
 // C-string comparisons
