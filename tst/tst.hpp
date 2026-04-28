@@ -256,11 +256,11 @@ struct GlobalTestManager {
         return !failedTests.empty();
     }
 
-    // Global variable that the currently running test conditionally increments during a test and
+    // Global variable that the currently running test conditionally sets to true during a test and
     // the test manager reads from after a test.
     // Passing this value around via the test function return would make calling subroutines in test
     // functions more difficult.
-    int activeTestFailures = 0;
+    bool activeTestFailed = false;
 
     void add(std::string_view testSuite, std::string test, std::function<void()> fun) {
         const std::scoped_lock lock(testAppendLock);
@@ -292,23 +292,21 @@ struct GlobalTestManager {
             // This actually calls the test function
             fun();
         } catch (PredicateFailureException&) {
-            // The test failure counter should already be incremented, unless the
+            // The test failure indicator should already be set to true, unless the
             // user manually threw a PredicateFailureException
-            if (activeTestFailures == 0) {
-                activeTestFailures = 1;
-            }
+            activeTestFailed = true;
         } catch (SkipTestException&) {
             activeTestSkipped = true;
         } catch (std::exception& e) {
             std::cout << std::format("Exception was thrown during test execution: {}\n", e.what());
-            ++activeTestFailures;
+            activeTestFailed = true;
         } catch (...) {
             std::cout << "Unknown exception was thrown during test execution.\n";
-            ++activeTestFailures;
+            activeTestFailed = true;
         }
         const auto t2 = steady_clock::now();
 
-        if (activeTestFailures > 0) {
+        if (activeTestFailed) {
             std::cout << std::format("{}", Status::TestFail);
             failedTests.emplace_back(std::format("{}.{}", suiteName, testName));
         } else if (activeTestSkipped) {
@@ -322,7 +320,7 @@ struct GlobalTestManager {
                                  duration_cast<milliseconds>(t2 - t1))
                   << std::endl;
 
-        activeTestFailures = 0;
+        activeTestFailed = false;
     }
 
     // Maps test suit names to vector testname-testfunction-pairs
@@ -365,10 +363,10 @@ class FixtureBase {
 };
 
 [[noreturn]] inline void fatalFailure() {
-    ++GlobalTestManager::getInstance().activeTestFailures;
+    GlobalTestManager::getInstance().activeTestFailed = true;
     throw PredicateFailureException();
 }
-inline void nonFatalFailure() { ++GlobalTestManager::getInstance().activeTestFailures; }
+inline void nonFatalFailure() { GlobalTestManager::getInstance().activeTestFailed = true; }
 using FailureHandler = void (*)();
 
 inline void boolTestFailure(bool expected, const char* condition, FailureHandler f,
