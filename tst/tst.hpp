@@ -16,6 +16,7 @@
 #include <limits>
 #include <mutex>
 #include <numeric>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -32,7 +33,6 @@ inline constexpr auto ANSI_RESET = "\033[0m";
 // Concept for types which can be printed with std::format
 // Mostly equivalent to C++23 std::formattable
 // For simplicity only compatible with char, not wchar
-// TODO: doesn't seem to work with "streamable" types!
 template <typename T, typename Context,
           typename Formatter = Context::template formatter_type<std::remove_const_t<T>>>
 concept FormattableWith =
@@ -45,6 +45,12 @@ concept FormattableWith =
 
 template <typename T>
 concept Formattable = FormattableWith<std::remove_reference_t<T>, std::format_context>;
+
+// Concept for types which can be printed with an ostream and operator<<
+template <typename T>
+concept Streamable = requires(std::ostream& os, T t) {
+    { os << t } -> std::convertible_to<std::ostream&>;
+};
 
 // Types wrapped in this wrapper can be printed with our custom formatter as a byte-sequence, if
 // they don't already have a formatter
@@ -137,12 +143,16 @@ struct std::formatter<tst::Printer<T>> {
     auto format(tst::Printer<T> wrapper, format_context& ctx) const {
         const T& t = wrapper.value;
 
-        // If type is already formattable
         if constexpr (tst::Formattable<T>) {
+            // If type is already formattable
             return std::format_to(ctx.out(), "{}", t);
-        }
-        // Fallback to hex dump
-        else {
+        } else if constexpr (tst::Streamable<T>) {
+            // If type is printable with operator<<
+            std::ostringstream ss;
+            ss << t;
+            return std::format_to(ctx.out(), "{}", ss.str());
+        } else {
+            // Fallback to hex dump
             auto out = std::format_to(ctx.out(), "<non-printable type:");
 
             const auto* bytes = reinterpret_cast<const std::byte*>(&t);
